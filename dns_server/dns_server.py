@@ -1,18 +1,23 @@
 import asyncio
 import logging
 import socket
+
+import dns
+import dns.message as message
+from dns.message import Message
 from asyncio import TaskGroup
 from logging import Logger
+from .resolver import Resolver
 
 
 class DnsServer:
-    ROOT_DNS_IP: str = "192.33.4.12"
+    ROOT_DNS_IP: str = "199.7.83.42"
     MY_SERVER_PORT: int = 5553
 
     def __init__(self) -> None:
         self._logger: Logger = logging.getLogger(__name__)
-        logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         self._my_server_ip: str = self._get_local_ip()
+        self._resolver: Resolver = Resolver(self._logger)
 
     async def _handle_tcp_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -21,10 +26,23 @@ class DnsServer:
         self._logger.info(f"Handling {client_addr}")
         message_length_in_bytes: bytes = await reader.readexactly(2)
         message_length: int = int.from_bytes(message_length_in_bytes, byteorder="big")
-        message: bytes = await reader.read(message_length)
+        dns_client_query_raw: bytes = await reader.read(message_length)
         self._logger.info(f"Received message from {client_addr}")
+        try:
+            dns_client_query: Message = dns.message.from_wire(dns_client_query_raw)
+        except message.MessageError:
+            self._logger.error(
+                "Raised error while parsing dns message from client (with TCP)"
+            )
+            return
 
-        writer.write(b"My message:" + message)
+        dns_answer_bytes: Message = await self._resolver.resolve(
+            dns_client_query, self.ROOT_DNS_IP
+        )
+        wire_response: bytes = dns_answer_bytes.to_wire()
+        writer.write(int.to_bytes(len(wire_response), 2, byteorder="big"))
+        writer.write(wire_response)
+
         await writer.drain()
 
     async def _handle_udp_client(self):
@@ -33,13 +51,27 @@ class DnsServer:
         sock_udp: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock_udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock_udp.setblocking(False)
-        sock_udp.bind((self._my_server_ip, self.MY_SERVER_PORT))
+        sock_udp.bind(("0.0.0.0", self.MY_SERVER_PORT))
 
         try:
             while True:
                 data, addr = await loop.sock_recvfrom(sock_udp, 1024)
                 self._logger.info(f"Received message from {addr}")
-                await loop.sock_sendto(sock_udp, b"My" + data, addr)
+
+                try:
+                    dns_client_query: message.Message = dns.message.from_wire(data)
+                except message.MessageError:
+                    self._logger.error(
+                        "Raised error while parsing dns message from client (with UDP)"
+                    )
+                    continue
+
+                answer_message: Message = await self._resolver.resolve(
+                    dns_client_query, self.ROOT_DNS_IP
+                )
+
+                wire_response: bytes = answer_message.to_wire()
+                await loop.sock_sendto(sock_udp, wire_response, addr)
         finally:
             sock_udp.close()
 
@@ -57,7 +89,7 @@ class DnsServer:
 
     async def _start_tcp_server(self) -> None:
         server = await asyncio.start_server(
-            self._handle_tcp_client, self._my_server_ip, self.MY_SERVER_PORT
+            self._handle_tcp_client, host=None, port=self.MY_SERVER_PORT
         )
         async with server:
             await server.serve_forever()
