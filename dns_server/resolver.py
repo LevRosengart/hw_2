@@ -75,7 +75,7 @@ class Resolver:
                 ns_name, ns_name.to_text()
             )
             self._logger.info(
-                f"Success resolved NS {ns_name.to_text()}={current_ns_ip}"
+                f"Успешно зарезолвен NS {ns_name.to_text()}={current_ns_ip}"
             )
         else:
             self._logger.info(
@@ -87,7 +87,7 @@ class Resolver:
     async def get_resolved_ns_record_ip(
         self, next_ns_name: dns.name.Name, start_ns_name: str
     ) -> str:
-        self._logger.info(f"Start resolving for {next_ns_name.to_text()}")
+        self._logger.info(f"Начинается резолвинг NS {next_ns_name.to_text()}")
         resolve_ns_query: Message = dns.message.make_query(
             next_ns_name, dns.rdatatype.A
         )
